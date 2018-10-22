@@ -2,10 +2,9 @@ import os
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.framework import ops
-from model import SourceModel, TargetModel, Discriminator
+from model_unreal import SourceModel, TargetModel, Discriminator
 import util
 import argparse
-
 
 def read_labeled_image_list(suncg_root_folder, mp3d_root_folder):
     """Reads a .txt file containing pathes and labeles
@@ -31,14 +30,21 @@ def read_labeled_image_list(suncg_root_folder, mp3d_root_folder):
     mp3d_color_images = []
     mp3d_depth_images = []
     for sub_folder in os.listdir(mp3d_root_folder):
-        for folder in os.listdir(os.path.join(mp3d_root_folder, sub_folder)):
-            for i in range(50):
-                color_img = os.path.join(mp3d_root_folder, sub_folder, folder, "color%d.png" % i)
-                depth_img = os.path.join(mp3d_root_folder, sub_folder, folder, "depth%d.png" % i)
-                assert(os.path.exists(color_img))
-                assert(os.path.exists(depth_img))
-                mp3d_color_images.append(color_img)
-                mp3d_depth_images.append(depth_img)
+        _mp3d_color_images = []
+        _mp3d_depth_images = []
+        # for folder in os.listdir(os.path.join(mp3d_root_folder, sub_folder)):
+        for i in range(50):
+            color_img = os.path.join(mp3d_root_folder, sub_folder, "color%d.png" % i)
+            depth_img = os.path.join(mp3d_root_folder, sub_folder, "depth%d.png" % i)
+            if not (os.path.exists(color_img) and os.path.exists(depth_img)):
+                os.system("rm -rf {}".format(os.path.join(mp3d_root_folder, sub_folder)))
+                break
+            
+            _mp3d_color_images.append(color_img)
+            _mp3d_depth_images.append(depth_img)
+            if i == 49:
+                mp3d_color_images += _mp3d_color_images
+                mp3d_depth_images += _mp3d_depth_images
 
     return suncg_color_images, suncg_depth_images, mp3d_color_images, mp3d_depth_images
 
@@ -49,9 +55,9 @@ def read_images_from_disk(input_queue):
     Returns:
       Two tensors: the decoded image, and the string label.
     """
-    suncg_color = tf.image.decode_png(tf.read_file(input_queue[0]), channels=4)
+    suncg_color = tf.image.decode_png(tf.read_file(input_queue[0]), channels=3)
     suncg_depth = tf.image.decode_png(tf.read_file(input_queue[1]), channels=1)
-    mp3d_color = tf.image.decode_png(tf.read_file(input_queue[2]), channels=4)
+    mp3d_color = tf.image.decode_png(tf.read_file(input_queue[2]), channels=3)
     mp3d_depth = tf.image.decode_png(tf.read_file(input_queue[3]), channels=1)
     return suncg_color, suncg_depth, mp3d_color, mp3d_depth
 
@@ -79,7 +85,7 @@ def preprocess_depth(depth, input_size):
 def train(args):
     # Reads pfathes of images together with their labels
     with tf.device("/cpu:0"):
-        suncg_color_image_list, suncg_depth_image_list, mp3d_color_image_list, mp3d_depth_image_list = read_labeled_image_list("/home/fengda/minos/gym/suncg", "/home/fengda/minos/gym/matter")
+        suncg_color_image_list, suncg_depth_image_list, mp3d_color_image_list, mp3d_depth_image_list = read_labeled_image_list("/home/linchao/minos/gym/suncg", "/home/linchao/minos/gym/matter")
         print(len(suncg_color_image_list), len(suncg_depth_image_list), len(mp3d_color_image_list), len(mp3d_depth_image_list))
         min_len = min(len(suncg_color_image_list), len(suncg_depth_image_list), len(mp3d_color_image_list), len(mp3d_depth_image_list))
         suncg_color_image_list, suncg_depth_image_list, mp3d_color_image_list, mp3d_depth_image_list = suncg_color_image_list[:min_len], suncg_depth_image_list[:min_len], mp3d_color_image_list[:min_len], mp3d_depth_image_list[:min_len]
@@ -107,8 +113,10 @@ def train(args):
                                               batch_size=args.batch_size)
     
     with tf.device("/gpu:0"):
-        suncg_input = tf.concat([suncg_color_batch, suncg_depth_batch], axis=3)
-        mp3d_input = tf.concat([mp3d_color_batch, mp3d_depth_batch], axis=3)
+        # suncg_input = tf.concat([suncg_color_batch, suncg_depth_batch], axis=3)
+        # mp3d_input = tf.concat([mp3d_color_batch, mp3d_depth_batch], axis=3)
+        suncg_input = suncg_color_batch
+        mp3d_input = mp3d_color_batch
         source_input = tf.concat([suncg_input, suncg_input], axis=0)
         target_input = tf.concat([mp3d_input, suncg_input], axis=0)
         source_model = SourceModel(args, source_input)
@@ -128,8 +136,8 @@ def train(args):
         identity_loss = tf.nn.l2_loss(suncg_output_source - suncg_output_target) * args.idt_loss
         
         # trainable_variables = tf.trainable_variables() # target_model, discriminator
-        source_vars = list(util.collect_vars('a2c_model/pi').values())
-        target_vars = list(util.collect_vars('a2c_model1/pi').values())
+        source_vars = list(util.collect_vars('source').values())
+        target_vars = list(util.collect_vars('target').values())
         disc_vars = list(util.collect_vars('disc').values())
         target_l2_norm = tf.add_n([tf.nn.l2_loss(v) for v in target_vars]) * args.l2_norm
         disc_l2_norm = tf.add_n([tf.nn.l2_loss(v) for v in disc_vars]) * args.l2_norm
@@ -157,7 +165,8 @@ def train(args):
     sess = util.get_session()
     sess.run(tf.local_variables_initializer())
     sess.run(tf.global_variables_initializer())
-    util.load_variables_redir("/home/fengda/baselines/saved_models/exp_017/checkpoint_10000.pt", 'a2c_model/pi', 'a2c_model/pi', sess=sess)
+    util.load_checkpoints("/home/linchao/unreal/suncg_s/checkpoint-13100068", "net_-1", "source", sess=sess)
+    # util.load_variables_redir("/home/fengda/baselines/saved_models/exp_017/checkpoint_10000.pt", 'a2c_model/pi', 'a2c_model/pi', sess=sess)
     # util.load_variables_redir("/home/fengda/baselines/saved_models/exp_017/checkpoint_10000.pt", 'a2c_model1/pi', 'a2c_model/pi', sess=sess)
     tf.train.start_queue_runners(sess)
 
@@ -168,9 +177,10 @@ def train(args):
             writer.add_summary(summary, cnt)
             print("{}/{} loss: {} {} {} {}".format(epoch, i_batch, _m_loss, _a_loss, _idt_loss, _l2_norm))
             if cnt % args.save_iter == 0:
-                save_file = os.path.join(args.save_path, "checkpoint_{}.pt".format(cnt))
-                print("save model at {}".format(save_file))
-                util.save_variables(save_file, sess=sess)
+                # save_file = os.path.join(args.save_path, "checkpoint_{}.pt".format(cnt))
+                print("save model iter {}".format(cnt))
+                # util.save_variables(save_file, sess=sess)
+                util.save_checkpoints(args.save_path, cnt, sess=sess)
             cnt += 1
             
     # print(sess.run(source_model.output))

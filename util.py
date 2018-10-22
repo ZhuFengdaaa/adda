@@ -7,6 +7,39 @@ import functools
 import collections
 from collections import OrderedDict
 import multiprocessing
+from tensorflow.python.tools import inspect_checkpoint as chkp
+from tensorflow.python import pywrap_tensorflow
+
+def load_checkpoints(path, para_pre="", var_pre="", sess=None):
+    print("load checkpoints {}".format(path))
+    sess = sess or get_session()
+    # print all tensors in checkpoint file
+    # chkp.print_tensors_in_checkpoint_file(path, tensor_name='', all_tensors=True)
+    reader = pywrap_tensorflow.NewCheckpointReader(path)
+    var_to_shape_map = reader.get_variable_to_shape_map()
+    variables = tf.trainable_variables()
+    for k in sorted(var_to_shape_map):
+        print("para_name: ", k)
+    for v in variables:
+        print("var_name: ", v.name)
+
+    restores = []
+    for v in variables:
+        if v.name.startswith(var_pre):
+            for k in sorted(var_to_shape_map):
+                if k.startswith(para_pre):
+                    v_name = v.name[:-2] if v.name.endswith(":0") else v.name
+                    k_name = k[:-2] if k.endswith(":0") else k
+                    if v_name[len(var_pre):] == k_name[len(para_pre):]:
+                        print(v.name, k)
+                        para = reader.get_tensor(k)
+                        restores.append(v.assign(para))
+    sess.run(restores)
+
+def save_checkpoints(directory, global_t, sess=None):
+    sess = sess or get_session()
+    saver = tf.train.Saver()
+    saver.save(sess, directory + '/' + 'checkpoint', global_step = global_t)
 
 def switch(condition, then_expression, else_expression):
     """Switches between two operations depending on a scalar value (int or bool).

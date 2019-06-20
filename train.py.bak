@@ -5,7 +5,6 @@ from tensorflow.python.framework import ops
 from model_unreal import SourceModel, TargetModel, Discriminator
 import util
 import argparse
-import random
 
 def read_labeled_image_list(suncg_root_folder, mp3d_root_folder):
     """Reads a .txt file containing pathes and labeles
@@ -114,42 +113,27 @@ def train(args):
                                               batch_size=args.batch_size)
     
     with tf.device("/gpu:0"):
-        # 1. define input data
+        # suncg_input = tf.concat([suncg_color_batch, suncg_depth_batch], axis=3)
+        # mp3d_input = tf.concat([mp3d_color_batch, mp3d_depth_batch], axis=3)
         suncg_input = suncg_color_batch
         mp3d_input = mp3d_color_batch
-        # source_input = tf.concat([suncg_input, suncg_input], axis=0)
-        # target_input = tf.concat([mp3d_input, suncg_input], axis=0)
-        source_model = SourceModel(args, suncg_input)
-        target_model = TargetModel(args, mp3d_input)
-
-        # 2. split attribute and context
-        suncg_a, suncg_c = tf.split(source_model.output, num_or_size_splits=2, axis=0)
-        mp3d_a, mp3d_c = tf.split(target_model.output, num_or_size_splits=2, axis=0)
-        if random.random() < 0.5:
-            suncg_output = source_model.output
-            mp3d_output = target_model.output
-        else:
-            suncg_output = tf.concat([suncg_a, mp3d_c], axis=0)
-            mp3d_output = tf.concat([mp3d_a, suncg_c], axis=0)
-
-        # 3. concat adversary feature and label
+        source_input = tf.concat([suncg_input, suncg_input], axis=0)
+        target_input = tf.concat([mp3d_input, suncg_input], axis=0)
+        source_model = SourceModel(args, source_input)
+        target_model = TargetModel(args, target_input)
+        suncg_output, suncg_output_source = tf.split(source_model.output, num_or_size_splits=2, axis=0)
+        mp3d_output, suncg_output_target = tf.split(target_model.output, num_or_size_splits=2, axis=0)
         adversary_ft = tf.concat([suncg_output, mp3d_output], 0)
         discriminator = Discriminator(args, adversary_ft)
         adversary_logits = discriminator.output
         label_ms = tf.fill([args.batch_size, 1], 1.0)
         label_mt = tf.fill([args.batch_size, 1], 0.0)
         adversary_label = tf.concat([label_ms, label_mt], 0)
-
-        # 4. define content feature and label
-        suncg_d = Discriminator(args, suncg_c)
-        mp3d_d = Discriminator(args, mp3d_c)
-        content_feature = tf.concat([suncg_d.output, mp3d_d.output], 0)
-        content_label = tf.fill([args.batch_size, 1], 0.5)
-
-        # 5. compute loss
-        mapping_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=adversary_logits, labels=1 - adversary_label)
-        domain_adv_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=adversary_logits, labels=adversary_label)
-        content_adv_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=content_feature, labels=content_label)
+        mapping_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits = adversary_logits, labels = 1 - adversary_label)
+        adversary_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits = adversary_logits, labels = adversary_label)
+        suncg_output_source = tf.Print(suncg_output_source, [suncg_output_source], message="source")
+        suncg_output_target = tf.Print(suncg_output_target, [suncg_output_target], message="target")
+        identity_loss = tf.nn.l2_loss(suncg_output_source - suncg_output_target) * args.idt_loss
         
         # trainable_variables = tf.trainable_variables() # target_model, discriminator
         source_vars = list(util.collect_vars('source').values())
@@ -158,8 +142,8 @@ def train(args):
         target_l2_norm = tf.add_n([tf.nn.l2_loss(v) for v in target_vars]) * args.l2_norm
         disc_l2_norm = tf.add_n([tf.nn.l2_loss(v) for v in disc_vars]) * args.l2_norm
         l2_norm = target_l2_norm + disc_l2_norm
-        target_grads = tf.gradients(mapping_loss + target_l2_norm + content_adv_loss, target_vars, name="target_grads")
-        disc_grads = tf.gradients(domain_adv_loss + disc_l2_norm, disc_vars, name="disc_grads")
+        target_grads = tf.gradients(mapping_loss + target_l2_norm + identity_loss, target_vars, name="target_grads")
+        disc_grads = tf.gradients(adversary_loss + disc_l2_norm, disc_vars, name="disc_grads")
         lr_var = tf.Variable(args.lr, name='learning_rate', trainable=False)
         optimizer = tf.train.AdamOptimizer(lr_var) # different from adda
         apply_op = optimizer.apply_gradients(zip(target_grads+disc_grads, target_vars+disc_vars), name='apply_op')
@@ -168,14 +152,13 @@ def train(args):
         _extra_train_ops = []
         train_op = tf.group([apply_op] + _extra_train_ops)
         m_loss = tf.reduce_mean(mapping_loss)
-        a_loss = tf.reduce_mean(domain_adv_loss)
-        c_loss = tf.reduce_mean(content_adv_loss)
+        a_loss = tf.reduce_mean(adversary_loss)
         weight_norm = tf.reduce_mean(target_l2_norm)+tf.reduce_mean(disc_l2_norm)
         tf.summary.scalar('lr', optimizer._lr)
-        tf.summary.scalar('classification loss', m_loss)
-        tf.summary.scalar('content adversary loss', c_loss)
-        tf.summary.scalar('attribute adversary loss', a_loss)
+        tf.summary.scalar('mapping loss', m_loss)
+        tf.summary.scalar('adversary loss', a_loss)
         tf.summary.scalar('weight norm', weight_norm)
+        tf.summary.scalar('l2 loss', identity_loss)
         merged = tf.summary.merge_all()
         writer = tf.summary.FileWriter("./tensorboard/data")
 
@@ -191,7 +174,7 @@ def train(args):
     cnt = 0
     for epoch in range(args.num_epochs):
         for i_batch in range(int(min_len/args.batch_size)):
-            _, summary, _m_loss, _a_loss, _idt_loss, _l2_norm = sess.run([train_op, merged, m_loss, a_loss, content_adv_loss, l2_norm])
+            _, summary, _m_loss, _a_loss, _idt_loss, _l2_norm = sess.run([train_op, merged, m_loss, a_loss, identity_loss, l2_norm])
             writer.add_summary(summary, cnt)
             print("{}/{} loss: {} {} {} {}".format(epoch, i_batch, _m_loss, _a_loss, _idt_loss, _l2_norm))
             if cnt % args.save_iter == 0:

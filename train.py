@@ -159,27 +159,33 @@ def train(args):
         if random.random() < 0.5:
             suncg_output = source_model.output
             mp3d_output = target_model.output
+            c_label_ms = tf.fill([args.batch_size, 1], 1.0)
+            c_label_mt = tf.fill([args.batch_size, 1], 0.0)
         else:
             suncg_output = tf.concat([suncg_a, mp3d_c], axis=3)
             mp3d_output = tf.concat([mp3d_a, suncg_c], axis=3)
+            c_label_ms = tf.fill([args.batch_size, 1], 0.0)
+            c_label_mt = tf.fill([args.batch_size, 1], 1.0)
+        a_label_ms = tf.fill([args.batch_size, 1], 1.0)
+        a_label_mt = tf.fill([args.batch_size, 1], 0.0)
 
         # 3. concat domain adversary feature and label
         adversary_ft = tf.concat([suncg_output, mp3d_output], 0)
         discriminator = Discriminator_domain(adversary_ft)
         adversary_logits = discriminator.output
-        label_ms = tf.fill([args.batch_size, 1], 1.0)
-        label_mt = tf.fill([args.batch_size, 1], 0.0)
-        mapping_label = tf.concat([label_ms, label_mt], 0)
+        mapping_label = tf.concat([a_label_ms, a_label_mt], 0)
+        content_label = tf.concat([c_label_ms, c_label_mt], 0)
 
         # 4. define content feature and label
         content_feature = tf.concat([suncg_c, mp3d_c], axis=0)
         content_logits = Discriminator_content(content_feature).output
-        content_label = tf.fill([2 * args.batch_size, 1], 0.5)
+        # content_label = tf.fill([2 * args.batch_size, 1], 0.5)
 
         # 5. compute loss
-        mapping_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=adversary_logits, labels=mapping_label)
-        domain_adv_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=adversary_logits, labels=1-mapping_label)
+        domain_adv_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=adversary_logits, labels=mapping_label)
         content_adv_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=content_logits, labels=content_label)
+        domain_adv_loss = tf.reduce_mean(domain_adv_loss)
+        content_adv_loss = tf.reduce_mean(content_adv_loss)
         
         # trainable_variables = tf.trainable_variables() # target_model, discriminator
         source_vars = list(util.collect_vars('source').values())
@@ -192,7 +198,7 @@ def train(args):
 
         l2_norm = target_l2_norm + disc_c_l2_norm + disc_d_l2_norm
 
-        target_grads = tf.gradients(mapping_loss + target_l2_norm, target_vars, name="target_grads")
+        target_grads = tf.gradients(- domain_adv_loss - content_adv_loss + target_l2_norm, target_vars, name="target_grads")
         disc_c_grads = tf.gradients(content_adv_loss + disc_c_l2_norm, disc_vars_c, name="disc_c_grads")
         disc_d_grads = tf.gradients(domain_adv_loss + disc_d_l2_norm, disc_vars_d, name="disc_d_grads")
         lr_var = tf.Variable(args.lr, name='learning_rate', trainable=False)
@@ -202,12 +208,10 @@ def train(args):
         # apply_disc_op = optimizer.apply_gradients(zip(disc_grads, disc_vars), name='disc_apply_op')
         _extra_train_ops = []
         train_op = tf.group([apply_op] + _extra_train_ops)
-        m_loss = tf.reduce_mean(mapping_loss)
         d_loss = tf.reduce_mean(domain_adv_loss)
         c_loss = tf.reduce_mean(content_adv_loss)
         weight_norm = tf.reduce_mean(target_l2_norm) + tf.reduce_mean(disc_c_l2_norm) + tf.reduce_mean(disc_d_l2_norm)
         tf.summary.scalar('lr', optimizer._lr)
-        tf.summary.scalar('mapping loss', m_loss)
         tf.summary.scalar('content adversary loss', c_loss)
         tf.summary.scalar('domain adversary loss', d_loss)
         tf.summary.scalar('weight norm', weight_norm)
@@ -230,11 +234,11 @@ def train(args):
     cnt = 0
     for epoch in range(args.num_epochs):
         for i_batch in range(int(len(suncg_color_image_list)/args.batch_size)):
-            _, summary, _m_loss, _d_loss, _c_loss, _l2_norm, suncg_img = sess.run([train_op, merged, m_loss, d_loss, c_loss, l2_norm, mp3d_input])
+            _, summary, _d_loss, _c_loss, _l2_norm, suncg_img = sess.run([train_op, merged, d_loss, c_loss, l2_norm, mp3d_input])
             print(suncg_img[0,20,0])
             writer.add_summary(summary, cnt)
-            print("{}/{} | Mapping_loss: {:.4f} | Domain_loss: {:.4f} | Content_loss: {} | L2_norm: {:.4f}".
-                  format(epoch, i_batch, _m_loss, _d_loss, _c_loss, _l2_norm))
+            print("{}/{} | Domain_loss: {:.4f} | Content_loss: {} | L2_norm: {:.4f}".
+                  format(epoch, i_batch, _d_loss, _c_loss, _l2_norm))
             if cnt % args.save_iter == 0:
                 # save_file = os.path.join(args.save_path, "checkpoint_{}.pt".format(cnt))
                 print("save model iter {}".format(cnt))

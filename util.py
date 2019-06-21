@@ -501,3 +501,20 @@ def collect_vars(scope, start=None, end=None, prepend_scope=None):
             var_name = os.path.join(prepend_scope, var_name)
         var_dict[var_name] = var
     return var_dict
+
+def build_dataset(root_dir, img_num=20000):
+    mp3d_path = os.path.join(root_dir, 'mp3d')
+    suncg_path = os.path.join(root_dir, 'suncg')
+    mp3d_label = 0
+    suncg_label = 1
+    with open('mp3d.txt', 'w+') as f:
+        for i in range(img_num):
+            f.writelines('{}/{}.png {}\n'.format(mp3d_path, i, mp3d_label))
+
+    with open('suncg.txt', 'w+') as f:
+        for i in range(img_num):
+            f.writelines('{}/{}.png {}\n'.format(suncg_path, i, suncg_label))
+    print('Success build the image list')
+
+
+# build_dataset(root_dir='/home/xuguanghui/jrt/minos/gym/datasets')

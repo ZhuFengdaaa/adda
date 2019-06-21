@@ -60,12 +60,25 @@ def unreal_cnn(state_input, reuse=False):
         h_conv2 = _conv2d(h_conv1,     W_conv2, 2) + b_conv2 # stride=2 => 9x9x32
         return h_conv2
 
-def disc_fc(input_feature_map, **conv_kwargs):
+def disc_c(input_feature_map, **conv_kwargs):
+    activ = tf.nn.relu
+    W_fc1, b_fc1 = _fc_variable([1296, 256], "base_fc1")
+    W_fc2, b_fc2 = _fc_variable([256, 256], "base_fc2")
+    W_fc3, b_fc3 = _fc_variable([256, 1], "base_fc3")
+    
+    input_feature = tf.reshape(input_feature_map, [-1, 1296])
+    fc1 = tf.nn.relu(tf.matmul(input_feature, W_fc1) + b_fc1)
+    fc2 = tf.nn.relu(tf.matmul(fc1, W_fc2) + b_fc2)
+    fc3 = tf.nn.relu(tf.matmul(fc2, W_fc3) + b_fc3)
+    return fc3
+
+
+def disc_d(input_feature_map, **conv_kwargs):
     activ = tf.nn.relu
     W_fc1, b_fc1 = _fc_variable([2592, 256], "base_fc1")
     W_fc2, b_fc2 = _fc_variable([256, 256], "base_fc2")
     W_fc3, b_fc3 = _fc_variable([256, 1], "base_fc3")
-    
+
     input_feature = tf.reshape(input_feature_map, [-1, 2592])
     fc1 = tf.nn.relu(tf.matmul(input_feature, W_fc1) + b_fc1)
     fc2 = tf.nn.relu(tf.matmul(fc1, W_fc2) + b_fc2)
@@ -83,7 +96,12 @@ class TargetModel():
         with tf.variable_scope("target"):
             self.output = unreal_cnn(X)
 
-class Discriminator():
-    def __init__(self, args, M):
-        with tf.variable_scope("disc"):
-            self.output = disc_fc(M)
+class Discriminator_content():
+    def __init__(self, M):
+        with tf.variable_scope("disc_c"):
+            self.output = disc_c(M)
+
+class Discriminator_domain():
+    def __init__(self, M):
+        with tf.variable_scope("disc_d"):
+            self.output = disc_d(M)
